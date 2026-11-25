@@ -5,6 +5,7 @@
  */
 #include "app_claw.h"
 #include "app_chat_help.h"
+#include "app_cloud_media.h"
 #include "app_fs.h"
 #include "claw_core.h"
 #include "claw_version.h"
@@ -116,6 +117,7 @@ static esp_err_t main_save_config(const app_config_t *config)
     }
     claw_core_set_tool_progress_enabled(app_config_show_tool_progress(config));
     app_chat_help_set_auto_sticker_rate(app_config_auto_sticker_rate(config));
+    app_cloud_media_set_reply_mode(config->tts_reply_mode[0] - '0');
 
     claw_config = calloc(1, sizeof(*claw_config));
     if (!claw_config) {
@@ -332,6 +334,7 @@ void app_main(void)
     ESP_ERROR_CHECK(app_config_load(s_config));
     claw_core_set_tool_progress_enabled(app_config_show_tool_progress(s_config));
     app_chat_help_set_auto_sticker_rate(app_config_auto_sticker_rate(s_config));
+    app_cloud_media_set_reply_mode(s_config->tts_reply_mode[0] - '0');
     app_config_to_claw(s_config, s_claw_config);
     init_timezone(app_config_get_timezone(s_config)); // no need to check error
     esp_err_t help_err = app_chat_help_init();

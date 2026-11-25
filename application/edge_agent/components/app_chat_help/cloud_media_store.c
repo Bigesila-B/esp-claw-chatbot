@@ -2,6 +2,7 @@
 #include "cloud_media_internal.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -15,7 +16,6 @@
 #define MEDIA_PROFILES_KEY "profiles_v1"
 #define MEDIA_PROFILES_MAX 8
 #define MEDIA_STORE_MAX (16 * 1024)
-
 static QueueHandle_t s_storage_queue;
 static nvs_handle_t s_nvs;
 
@@ -191,7 +191,7 @@ static esp_err_t build_profile(const cJSON *input, bool draft, cJSON **output)
     const cJSON *extra = cJSON_GetObjectItemCaseSensitive(input, "parameters");
     if (!valid_name(name) || !kind || (strcmp(kind, "image") && strcmp(kind, "tts") && strcmp(kind, "stt")) ||
             !model || !*model || strlen(model) > 128 || strpbrk(model, "\r\n") ||
-            !cloud_media_url_valid(url) || strlen(url) > 512 || (draft && strcmp(kind, "image") != 0) ||
+            !cloud_media_url_valid(url) || strlen(url) > 512 || (draft && strcmp(kind, "stt") == 0) ||
             (extra && (!cJSON_IsObject(extra) || !parameters_valid(extra, strcmp(kind, "stt") == 0, 0)))) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -261,6 +261,7 @@ typedef struct {
     const char *kind;
     cJSON *output;
     bool draft;
+    bool chat_setup;
 } profile_operation_t;
 
 static esp_err_t save_operation(void *argument)
@@ -284,7 +285,9 @@ static esp_err_t save_operation(void *argument)
         if (err == ESP_OK) {
             int index = find_profile(profiles, name);
             const cJSON *previous = index < 0 ? NULL : cJSON_GetArrayItem(profiles, index);
-            if (draft && previous) {
+            const char *previous_kind = cloud_media_string(previous, "kind");
+            if (previous && (draft || (op->chat_setup &&
+                    (!previous_kind || strcmp(previous_kind, "tts") != 0)))) {
                 err = ESP_ERR_INVALID_STATE;
             } else if (!previous && cJSON_GetArraySize(profiles) >= MEDIA_PROFILES_MAX) {
                 err = ESP_ERR_INVALID_SIZE;
@@ -294,12 +297,17 @@ static esp_err_t save_operation(void *argument)
                 }
                 if (key && *key && !cJSON_AddStringToObject(profile, "api_key", key)) {
                     err = ESP_ERR_NO_MEM;
-                } else if (index < 0 ? cJSON_AddItemToArray(profiles, profile) :
-                                      cJSON_ReplaceItemViaPointer(profiles, (cJSON *)previous, profile)) {
-                    profile = NULL;
-                    err = save_profiles(profiles);
                 } else {
-                    err = ESP_ERR_NO_MEM;
+                    if (op->chat_setup && previous) cJSON_DeleteItemFromArray(profiles, index);
+                    bool saved = op->chat_setup ? cJSON_InsertItemInArray(profiles, 0, profile) :
+                                 index < 0 ? cJSON_AddItemToArray(profiles, profile) :
+                                             cJSON_ReplaceItemViaPointer(profiles, (cJSON *)previous, profile);
+                    if (saved) {
+                        profile = NULL;
+                        err = save_profiles(profiles);
+                    } else {
+                        err = ESP_ERR_NO_MEM;
+                    }
                 }
             }
         }
@@ -307,6 +315,12 @@ static esp_err_t save_operation(void *argument)
     cJSON_Delete(profile);
     cJSON_Delete(profiles);
     return err;
+}
+
+esp_err_t cloud_media_save_chat_tts(const cJSON *input)
+{
+    profile_operation_t op = { .input = input, .chat_setup = true };
+    return app_cloud_media_storage_call(save_operation, &op);
 }
 
 esp_err_t app_cloud_media_save(const cJSON *input, bool draft)

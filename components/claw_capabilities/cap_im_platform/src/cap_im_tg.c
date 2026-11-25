@@ -719,10 +719,7 @@ static void cap_im_tg_handle_update(cJSON *update_json)
                                            sender_id,
                                            message_id,
                                            text_json->valuestring) == ESP_OK) {
-            ESP_LOGI(TAG, "Telegram inbound %s: %.48s%s",
-                     chat_id,
-                     text_json->valuestring,
-                     strlen(text_json->valuestring) > 48 ? "..." : "");
+            ESP_LOGI(TAG, "Telegram inbound %s (%u bytes)", chat_id, (unsigned)strlen(text_json->valuestring));
         } else {
             ESP_LOGW(TAG, "Failed to publish Telegram inbound message");
         }
@@ -1380,8 +1377,17 @@ static esp_err_t cap_im_tg_send_voice_execute(const char *input, const claw_cap_
 {
     cJSON *root = cJSON_Parse(input);
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root, "path"));
-    esp_err_t err = ctx && ctx->chat_id && path ?
-        cap_im_tg_send_json_message("sendVoice", ctx->chat_id, "voice", path, NULL) : ESP_ERR_INVALID_ARG;
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (ctx && ctx->chat_id && path && *path) {
+        const char *extension = strrchr(path, '.');
+        if (path[0] == '/' && extension && strcmp(extension, ".wav") == 0) {
+            err = cap_im_tg_send_media(ctx->chat_id, path, NULL, false);
+        } else if (path[0] == '/') {
+            err = cap_im_tg_send_multipart_file("sendVoice", "voice", ctx->chat_id, path, NULL, false);
+        } else {
+            err = cap_im_tg_send_json_message("sendVoice", ctx->chat_id, "voice", path, NULL);
+        }
+    }
     cJSON_Delete(root);
     snprintf(output, size, "%s", esp_err_to_name(err));
     return err;
@@ -1390,7 +1396,7 @@ static esp_err_t cap_im_tg_send_voice_execute(const char *input, const claw_cap_
 static const claw_cap_descriptor_t s_tg_descriptors[] = {
     {
         .id = "tg_send_voice", .name = "tg_send_voice", .family = "im",
-        .description = "Send a Telegram voice message from a URL.",
+        .description = "Send a Telegram voice message from a URL or local file.",
         .kind = CLAW_CAP_KIND_CALLABLE, .execute = cap_im_tg_send_voice_execute,
     },
     {

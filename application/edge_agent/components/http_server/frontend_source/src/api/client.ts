@@ -13,6 +13,7 @@ export type AppConfig = {
   show_tool_progress: string;
   auto_stickers: string;
   sticker_rate: string;
+  tts_reply_mode: string;
   llm_api_key: string;
   llm_backend_type: string;
   llm_model: string;
@@ -87,7 +88,7 @@ export const GROUP_FIELDS: Record<ConfigGroup, (keyof AppConfig)[]> = {
   capabilities: ['enabled_cap_groups', 'llm_visible_cap_groups'],
   skills: ['enabled_lua_modules'],
   time: ['time_timezone'],
-  chat: ['show_tool_progress', 'auto_stickers', 'sticker_rate'],
+  chat: ['show_tool_progress', 'auto_stickers', 'sticker_rate', 'tts_reply_mode'],
 };
 
 export function blankConfig(): Partial<AppConfig> {

@@ -30,6 +30,7 @@ typedef struct {
     char show_tool_progress[8];
     char auto_stickers[8];
     char sticker_rate[4];
+    char tts_reply_mode[2];
     char llm_api_key[APP_CONFIG_STR_LEN];
     char llm_backend_type[32];
     char llm_model[64];

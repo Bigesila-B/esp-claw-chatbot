@@ -217,7 +217,8 @@ claw_core_agent_loop_phase_t claw_core_control_get_phase(claw_core_state_t *core
 
 void claw_core_publish_out_message_if_requested(const claw_core_request_item_t *request,
                                                 const claw_core_response_item_t *response,
-                                                bool persisted, const char *image_url);
+                                                bool persisted, const char *image_url, const char *display_text,
+                                                bool (*deliver)(const struct claw_event *event));
 void claw_core_publish_stage_tool_calls(const claw_core_request_t *request,
                                         const claw_core_llm_response_t *response,
                                         uint32_t iteration);
@@ -238,7 +239,8 @@ esp_err_t claw_core_persist_context_tool_round_if_configured(
 esp_err_t claw_core_persist_context_final_if_configured(claw_core_state_t *core,
                                                         const claw_core_request_t *request,
                                                         const char *assistant_final_json,
-                                                        const char *assistant_text);
+                                                        const char *assistant_text,
+                                                        const char *display_text);
 void claw_core_log_context_persist_failure(const claw_core_request_t *request,
                                            const char *operation,
                                            esp_err_t err);

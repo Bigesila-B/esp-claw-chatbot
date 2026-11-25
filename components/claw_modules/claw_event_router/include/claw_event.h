@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-typedef struct {
+typedef struct claw_event {
     char event_id[48];
     char source_cap[32];
     char event_type[32];

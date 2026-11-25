@@ -69,10 +69,15 @@ typedef struct {
     const char *target_chat_id;
 } claw_core_request_t;
 
-/** Optional app-owned instructions and final reply decoration. Register before starting cores. */
+struct claw_event;
+bool claw_core_reply_interrupted(claw_core_handle_t core);
+
+/** Optional app-owned presentation of final replies. Register before starting cores. */
 typedef struct {
     char *(*instructions)(const claw_core_request_t *request);
     bool (*finalize)(const claw_core_request_t *request, char **text, bool has_images, char **image_url);
+    char *(*display_text)(claw_core_handle_t core, const claw_core_request_t *request, const char *text);
+    bool (*deliver)(const struct claw_event *event);
 } claw_core_reply_hooks_t;
 
 void claw_core_set_reply_hooks(const claw_core_reply_hooks_t *hooks);
@@ -88,6 +93,7 @@ typedef struct {
     claw_core_context_record_type_t type;
     const char *message_json;
     const char *text;
+    const char *display_text; /**< Optional transcript representation, excluded from model context. */
 } claw_core_context_record_t;
 
 typedef struct {

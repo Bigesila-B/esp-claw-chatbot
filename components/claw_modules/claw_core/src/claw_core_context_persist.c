@@ -128,7 +128,8 @@ esp_err_t claw_core_persist_context_tool_round_if_configured(
 esp_err_t claw_core_persist_context_final_if_configured(claw_core_state_t *core,
                                                         const claw_core_request_t *request,
                                                         const char *assistant_final_json,
-                                                        const char *assistant_text)
+                                                        const char *assistant_text,
+                                                        const char *display_text)
 {
     claw_core_context_record_t records[1];
     size_t record_count = 0;
@@ -141,6 +142,7 @@ esp_err_t claw_core_persist_context_final_if_configured(claw_core_state_t *core,
         .type = CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL,
         .message_json = assistant_final_json,
         .text = assistant_text,
+        .display_text = display_text,
     };
 
     return persist_context_batch_if_configured(core, request, records, record_count, true);

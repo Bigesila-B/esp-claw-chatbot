@@ -359,7 +359,7 @@ static const char *sticker_request_channel(const claw_core_request_t *request)
 
 static char *auto_sticker_instructions(const claw_core_request_t *request)
 {
-    if (!atomic_load(&s_auto_sticker_rate) || !sticker_request_channel(request)) return NULL;
+    if (!atomic_load(&s_auto_sticker_rate) || app_cloud_media_voice_only() || !sticker_request_channel(request)) return NULL;
     char *catalog = NULL;
     if (app_cloud_media_storage_call(read_auto_sticker_catalog, &catalog) != ESP_OK) return NULL;
     cJSON *names = cJSON_CreateArray();
@@ -421,7 +421,7 @@ static bool finalize_auto_sticker(const claw_core_request_t *request, char **tex
         return true;
     }
     unsigned rate = atomic_load(&s_auto_sticker_rate);
-    if (markers != 1 || !channel || !rate || name_size > STICKER_NAME_MAX ||
+    if (markers != 1 || !channel || !rate || app_cloud_media_voice_only() || name_size > STICKER_NAME_MAX ||
             has_images || strstr(*text, "![")) return true;
     if (rate < 100 && esp_random() % 100 >= rate) return true;
     char *catalog = NULL;
@@ -843,6 +843,7 @@ esp_err_t app_chat_help_init(void)
 {
     claw_core_set_reply_hooks(&(claw_core_reply_hooks_t) {
         .instructions = auto_sticker_instructions, .finalize = finalize_auto_sticker,
+        .display_text = app_cloud_media_display_reply, .deliver = app_cloud_media_deliver_reply,
     });
 #if CONFIG_APP_CLAW_CAP_MCP_CLIENT
     cap_mcp_client_set_chat_sender(reply_mcp_message);

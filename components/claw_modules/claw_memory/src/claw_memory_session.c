@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "claw_memory_internal.h"
+#include "claw_paths.h"
 #include "claw_task.h"
 
 #include <errno.h>
@@ -956,6 +957,8 @@ static esp_err_t session_history_read_record_text(FILE *file,
     return ESP_OK;
 }
 
+#define SESSION_DISPLAY_TEXT "_claw_display_text"
+
 static esp_err_t session_history_append_loaded_record(cJSON *records,
                                                       cJSON *record,
                                                       bool expand_array)
@@ -1033,6 +1036,9 @@ static esp_err_t session_history_load_indexed_json(FILE *file,
         if (!record) {
             err = ESP_ERR_INVALID_STATE;
             goto cleanup;
+        }
+        if (type == CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL) {
+            cJSON_DeleteItemFromObjectCaseSensitive(record, SESSION_DISPLAY_TEXT);
         }
 
         if (session_history_backend_mismatch(entry->backend_format)) {
@@ -2266,12 +2272,37 @@ static esp_err_t persist_context_unlocked(const claw_core_context_persist_batch_
     }
 
     for (i = 0; i < batch->record_count; i++) {
+        const claw_core_context_record_t *record = &batch->records[i];
         const char *role = NULL;
         const char *text = NULL;
+        const char *json = record->message_json;
+        char *presentation_json = NULL;
 
-        if (!batch->records[i].message_json || !batch->records[i].message_json[0]) {
-            role = claw_memory_session_record_text_role(batch->records[i].type);
-            text = batch->records[i].text;
+        if (record->display_text) {
+            cJSON *message = json ? cJSON_Parse(json) : NULL;
+            if (!cJSON_IsObject(message)) {
+                cJSON_Delete(message);
+                message = cJSON_CreateObject();
+                if (!cJSON_AddStringToObject(message, "role", "assistant") ||
+                        !cJSON_AddStringToObject(message, "content", record->text)) {
+                    cJSON_Delete(message);
+                    message = NULL;
+                }
+            }
+            cJSON_DeleteItemFromObjectCaseSensitive(message, SESSION_DISPLAY_TEXT);
+            if (cJSON_AddStringToObject(message, SESSION_DISPLAY_TEXT, record->display_text)) {
+                presentation_json = cJSON_PrintUnformatted(message);
+            }
+            cJSON_Delete(message);
+            if (!presentation_json) {
+                err = ESP_ERR_NO_MEM;
+                break;
+            }
+            json = presentation_json;
+        }
+        if (!json || !json[0]) {
+            role = claw_memory_session_record_text_role(record->type);
+            text = record->text;
             if (!role || !text || !text[0]) {
                 err = ESP_ERR_INVALID_ARG;
                 break;
@@ -2279,10 +2310,11 @@ static esp_err_t persist_context_unlocked(const claw_core_context_persist_batch_
         }
         err = session_history_append_indexed_record(data_file,
                                                     idx_file,
-                                                    batch->records[i].type,
-                                                    batch->records[i].message_json,
+                                                    record->type,
+                                                    json,
                                                     role,
                                                     text);
+        cJSON_free(presentation_json);
         if (err != ESP_OK) {
             break;
         }
@@ -2568,6 +2600,20 @@ static esp_err_t history_content_text(const cJSON *value, char **text, size_t *u
     return ESP_OK;
 }
 
+static bool session_history_display_available(const cJSON *display)
+{
+    static const char prefix[] = "[ESP-Claw 语音](</files/tts/voice-";
+    const char *text = cJSON_GetStringValue(display);
+    if (!text || strncmp(text, prefix, sizeof(prefix) - 1) != 0) return text != NULL;
+    const char *name = text + sizeof(prefix) - 1;
+    if (strspn(name, "0123456789abcdef") != 8 || (strcmp(name + 8, ".mp3>)") && strcmp(name + 8, ".wav>)"))) return false;
+    const char *root = claw_paths_get(CLAW_PATH_DATA);
+    char *file = root ? dup_printf("%s/tts/voice-%.12s", root, name) : NULL;
+    bool exists = session_history_path_exists(file);
+    free(file);
+    return exists;
+}
+
 esp_err_t claw_memory_read_session_messages(const char *session_id, size_t before, size_t limit, cJSON **out)
 {
     if (!session_id || !out || !limit || limit > 50) return ESP_ERR_INVALID_ARG;
@@ -2611,7 +2657,9 @@ esp_err_t claw_memory_read_session_messages(const char *session_id, size_t befor
         cJSON *record = err == ESP_OK ? cJSON_Parse(raw) : NULL;
         free(raw);
         if (err == ESP_OK && !record) err = ESP_ERR_INVALID_RESPONSE;
-        if (err == ESP_OK) err = history_content_text(record, &text, &used);
+        const cJSON *display = entry->record_type == CLAW_CORE_CONTEXT_RECORD_ASSISTANT_FINAL ?
+                               cJSON_GetObjectItemCaseSensitive(record, SESSION_DISPLAY_TEXT) : NULL;
+        if (err == ESP_OK) err = history_content_text(session_history_display_available(display) ? display : record, &text, &used);
         cJSON_Delete(record);
         if (err == ESP_OK && bytes + used > 32768 && cJSON_GetArraySize(messages)) {
             start = ordinal + 1; free(text); break;

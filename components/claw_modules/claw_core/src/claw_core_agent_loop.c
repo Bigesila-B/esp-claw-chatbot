@@ -21,6 +21,11 @@ void claw_core_set_reply_hooks(const claw_core_reply_hooks_t *hooks)
     s_reply_hooks = hooks ? *hooks : (claw_core_reply_hooks_t){0};
 }
 
+bool claw_core_reply_interrupted(claw_core_handle_t core)
+{
+    return core->stop_requested || core->inflight_abort;
+}
+
 static esp_err_t handle_pending_user_interrupts(claw_core_state_t *core,
                                                 const claw_core_request_item_t *request,
                                                 const char *timing_point,
@@ -116,6 +121,8 @@ void claw_core_agent_loop_task(void *arg)
         char *system_prompt = NULL;
         char *reply_instructions = NULL;
         char *reply_image_url = NULL;
+        char *display_text = NULL;
+        bool has_reply_media = false;
         char *tools_json = NULL;
         char tool_summary[CLAW_CORE_TOOL_SUMMARY_MAX_LEN] = {0};
         claw_core_llm_response_t llm_response = {0};
@@ -462,6 +469,12 @@ void claw_core_agent_loop_task(void *arg)
             bool has_images = cJSON_GetArraySize(reply_images) != 0;
             bool changed = reply_instructions && s_reply_hooks.finalize &&
                            s_reply_hooks.finalize(&request.view, &response.view.text, has_images, &reply_image_url);
+            has_reply_media = has_images || reply_image_url ||
+                              (response.view.text && strstr(response.view.text, "!["));
+            if (!has_reply_media && !storage_full && s_reply_hooks.display_text &&
+                    (request.view.flags & CLAW_CORE_REQUEST_FLAG_PUBLISH_OUT_MESSAGE)) {
+                display_text = s_reply_hooks.display_text(core, &request.view, response.view.text);
+            }
             const char *final_json = has_images || changed ? NULL : llm_response.raw_message_json;
             claw_core_append_reply_images(reply_images, &response.view.text);
             cJSON_Delete(reply_images);
@@ -470,7 +483,7 @@ void claw_core_agent_loop_task(void *arg)
             persist_err = claw_core_persist_context_final_if_configured(core,
                                                                         &request.view,
                                                                         final_json,
-                                                                        response.view.text);
+                                                                        response.view.text, display_text);
             claw_core_log_context_persist_failure(&request.view,
                                                   "persist_context_final",
                                                   persist_err);
@@ -480,6 +493,8 @@ void claw_core_agent_loop_task(void *arg)
                 char *reply = claw_utils_string_dup_printf("%s\n\n设备存储已满，本轮可能未保存。请在网页「文件管理」释放空间。",
                                                            response.view.text);
                 if (reply) {
+                    free(display_text);
+                    display_text = NULL;
                     free(response.view.text);
                     response.view.text = reply;
                     final_persisted = false;
@@ -547,7 +562,7 @@ finish_request:
                     persist_err = claw_core_persist_context_final_if_configured(core,
                                                                                 &request.view,
                                                                                 NULL,
-                                                                                failure_trace);
+                                                                            failure_trace, NULL);
                     claw_core_log_context_persist_failure(&request.view,
                                                           "persist_context_failure_note",
                                                           persist_err);
@@ -556,7 +571,9 @@ finish_request:
                 }
             }
         }
-        claw_core_publish_out_message_if_requested(&request, &response, final_persisted, reply_image_url);
+        claw_core_publish_out_message_if_requested(&request, &response, final_persisted, reply_image_url, display_text,
+                                                   has_reply_media || storage_full ? NULL : s_reply_hooks.deliver);
+        free(display_text);
         free(reply_image_url);
         free(reply_instructions);
         if (request.view.flags & CLAW_CORE_REQUEST_FLAG_SKIP_RESPONSE_QUEUE) {

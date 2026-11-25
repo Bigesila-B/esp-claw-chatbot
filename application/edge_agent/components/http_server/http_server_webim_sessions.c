@@ -204,7 +204,7 @@ static esp_err_t post_web_message(const claw_session_info_t *info, const char *t
                                   const char *message_id, uint32_t *run_id)
 {
     while (isspace((unsigned char)*text)) text++;
-    if (*text == '/') {
+    if (*text == '/' || app_cloud_media_is_setup_message(text)) {
         claw_event_t *event = calloc(1, sizeof(*event));
         if (!event) return ESP_ERR_NO_MEM;
         strlcpy(event->event_id, message_id, sizeof(event->event_id));
@@ -241,9 +241,11 @@ esp_err_t http_server_webim_send_session(httpd_req_t *req)
     const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(body, "session"));
     const char *message_id = cJSON_GetStringValue(cJSON_GetObjectItem(body, "client_message_id"));
     const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(body, "text"));
+    bool media_setup = app_cloud_media_is_setup_message(text);
     const char *legacy_chat = cJSON_GetStringValue(cJSON_GetObjectItem(body, "chat_id"));
     const bool legacy = !id && !message_id && legacy_chat && legacy_chat[0] && strlen(legacy_chat) < 96;
     cJSON *files = cJSON_GetObjectItem(body, "files");
+    if (err == ESP_OK && media_setup && cJSON_GetArraySize(files)) err = ESP_ERR_INVALID_ARG;
     const char *audio = NULL;
     char *combined = calloc(1, WEBIM_MESSAGE_MAX + 1);
     claw_session_info_t *info = calloc(1, sizeof(*info));
@@ -280,12 +282,13 @@ esp_err_t http_server_webim_send_session(httpd_req_t *req)
     http_server_ctx_t *ctx = http_server_ctx();
     uint32_t run_id = 0;
     bool duplicate = false;
+    const char *receipt_text = media_setup ? "/tts setup" : combined;
     if (err == ESP_OK) {
         for (size_t i = 0; i < HTTP_WEBIM_RECEIPTS; i++) {
             http_webim_receipt_t *old = &ctx->webim_receipts[i];
             if (strcmp(old->message_id, message_id) != 0) continue;
             duplicate = true;
-            if (strcmp(old->session, id) != 0 || !old->text || strcmp(old->text, combined) != 0) err = ESP_ERR_INVALID_STATE;
+            if (strcmp(old->session, id) != 0 || !old->text || strcmp(old->text, receipt_text) != 0) err = ESP_ERR_INVALID_STATE;
             else run_id = old->run_id;
             break;
         }
@@ -303,7 +306,9 @@ esp_err_t http_server_webim_send_session(httpd_req_t *req)
         }
         if (err == ESP_OK) {
             http_webim_receipt_t *slot = &ctx->webim_receipts[ctx->webim_receipt_next++ % HTTP_WEBIM_RECEIPTS];
-            free(slot->text); slot->text = combined; combined = NULL;
+            free(slot->text);
+            slot->text = media_setup ? strdup(receipt_text) : combined;
+            if (!media_setup) combined = NULL;
             strlcpy(slot->message_id, message_id, sizeof(slot->message_id));
             strlcpy(slot->session, id, sizeof(slot->session));
             slot->run_id = run_id;

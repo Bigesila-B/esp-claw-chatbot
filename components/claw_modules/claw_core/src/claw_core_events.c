@@ -147,6 +147,7 @@ static esp_err_t build_agent_out_message_event(const claw_core_request_t *reques
                                                const claw_core_response_t *response,
                                                bool persisted,
                                                const char *image_url,
+                                               const char *display_text,
                                                claw_event_t *out_event,
                                                char **out_payload_json)
 {
@@ -164,7 +165,7 @@ static esp_err_t build_agent_out_message_event(const claw_core_request_t *reques
 
     const char *error_text = response->status == CLAW_CORE_RESPONSE_STATUS_ERROR ?
                              claw_core_chat_error(response->error_message) : NULL;
-    text = error_text ? error_text : response->text;
+    text = error_text ? error_text : (display_text ? display_text : response->text);
     if (!text || !text[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -218,7 +219,8 @@ static esp_err_t build_agent_out_message_event(const claw_core_request_t *reques
 
 void claw_core_publish_out_message_if_requested(const claw_core_request_item_t *request,
                                                 const claw_core_response_item_t *response,
-                                                bool persisted, const char *image_url)
+                                                bool persisted, const char *image_url, const char *display_text,
+                                                bool (*deliver)(const struct claw_event *event))
 {
     claw_event_t event = {0};
     char *payload_json = NULL;
@@ -233,9 +235,10 @@ void claw_core_publish_out_message_if_requested(const claw_core_request_item_t *
                                         &response->view,
                                         persisted,
                                         image_url,
+                                        display_text,
                                         &event,
                                         &payload_json);
-    if (err == ESP_OK) {
+    if (err == ESP_OK && !(deliver && !display_text && response->view.status == CLAW_CORE_RESPONSE_STATUS_OK && deliver(&event))) {
         err = claw_event_router_publish(&event);
     }
     if (err != ESP_OK) {

@@ -96,6 +96,7 @@ static const config_field_def_t CONFIG_FIELDS[] = {
     CONFIG_FIELD("chat",         show_tool_progress),
     CONFIG_FIELD("chat",         auto_stickers),
     CONFIG_FIELD("chat",         sticker_rate),
+    CONFIG_FIELD("chat",         tts_reply_mode),
 };
 
 static const size_t CONFIG_FIELD_COUNT = sizeof(CONFIG_FIELDS) / sizeof(CONFIG_FIELDS[0]);
@@ -350,6 +351,13 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
         free(config);
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Sticker frequency must be an integer from 0 to 100");
+    }
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "tts_reply_mode");
+    const char *mode_value = cJSON_GetStringValue(mode);
+    if (mode && (!mode_value || strlen(mode_value) != 1 || !strchr("012", mode_value[0]))) {
+        cJSON_Delete(root);
+        free(config);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid TTS reply mode");
     }
 
 #if CONFIG_APP_CLAW_CAP_MCP_CLIENT

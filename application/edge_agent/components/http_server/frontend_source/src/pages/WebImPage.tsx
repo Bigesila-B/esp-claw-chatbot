@@ -13,7 +13,7 @@ import { imageUploadSize, prepareImageUpload } from '../utils/imageUpload';
 import { pushToast } from '../state/toast';
 
 const audioFile = (name: string) => /\.(mp3|wav|ogg|oga|opus|m4a|aac|silk|amr|webm|flac)$/i.test(name);
-const voiceUrl = (text: string) => /^\[ESP-Claw 语音\]\(<(https?:\/\/[^<>\s]+)>\)$/.exec(text)?.[1];
+const voiceUrl = (text: string) => /^\[ESP-Claw 语音\]\(<(https?:\/\/[^<>\s]+|\/files\/tts\/voice-[\da-f]{8}\.(?:mp3|wav))>\)$/.exec(text)?.[1];
 
 export const WebImPage: Component = () => {
   const chat = createWebChat();

@@ -2,20 +2,27 @@
 #include "cloud_media_internal.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include "claw_paths.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h"
 #include "sdkconfig.h"
 
 #define MEDIA_REPLY_MAX (16 * 1024)
+#define TTS_BASE64_MAX (((CLOUD_MEDIA_TTS_MAX + 2) / 3) * 4)
+#define TTS_DECODE_BLOCK 1024
 #define MEDIA_HTTP_TIMEOUT_MS 25000
 #define MEDIA_POLL_MS 1800
 #define MEDIA_POLL_WINDOW_US (75 * 1000000LL)
@@ -25,6 +32,21 @@ static const char *setting(const cJSON *profile, const char *key, const char *fa
 {
     const char *text = cloud_media_string(profile, key);
     return text && *text ? text : fallback;
+}
+
+static bool is_mimo_model(const cJSON *profile)
+{
+    const char *model = setting(profile, "model", "");
+    return !strcmp(setting(profile, "kind", ""), "tts") &&
+           !strncasecmp(model, "mimo-", 5) && strstr(model, "-tts");
+}
+
+static bool is_mimo_tts(const cJSON *profile, const char *url)
+{
+    static const char chat_path[] = "/chat/completions";
+    size_t length = strcspn(url, "?");
+    size_t suffix = sizeof(chat_path) - 1;
+    return is_mimo_model(profile) && length >= suffix && !memcmp(url + length - suffix, chat_path, suffix);
 }
 
 static const cJSON *json_path(const cJSON *root, const char *path)
@@ -105,7 +127,10 @@ static esp_err_t exchange(const cJSON *profile, const char *url, const char *pre
     }
     char *auth = NULL;
     const char *key = cloud_media_string(profile, "api_key");
-    const char *header = setting(profile, "auth_header", "Authorization");
+    const char mimo_origin[] = "https://api.xiaomimimo.com/";
+    bool mimo = is_mimo_tts(profile, url);
+    const char *header = setting(profile, "auth_header", mimo &&
+                                 !strncasecmp(url, mimo_origin, sizeof(mimo_origin) - 1) ? "api-key" : "Authorization");
     const char *auth_prefix = setting(profile, "auth_prefix", strcasecmp(header, "Authorization") == 0 ? "Bearer " : "");
     esp_err_t err = ESP_OK;
     if (key && *key) {
@@ -122,26 +147,29 @@ static esp_err_t exchange(const cJSON *profile, const char *url, const char *pre
     if (err == ESP_OK && prefix) err = write_body(client, prefix, length);
     if (err == ESP_OK && file) err = write_file(client, file, size);
     if (err == ESP_OK && file) err = write_body(client, suffix, sizeof(suffix) - 1);
+    size_t limit = mimo ? TTS_BASE64_MAX + MEDIA_REPLY_MAX : MEDIA_REPLY_MAX;
     if (err == ESP_OK) {
         int64_t reply_size = esp_http_client_fetch_headers(client);
         int status = esp_http_client_get_status_code(client);
         if (status == 401 || status == 403) err = ESP_ERR_NOT_ALLOWED;
         else if (status < 200 || status >= 300) err = ESP_ERR_INVALID_RESPONSE;
-        else if (reply_size > MEDIA_REPLY_MAX) err = ESP_ERR_INVALID_SIZE;
+        else if (reply_size > (int64_t)limit) err = ESP_ERR_INVALID_SIZE;
+        else if (reply_size > 0) limit = (size_t)reply_size;
     }
     char *body = NULL;
     if (err == ESP_OK) {
-        body = malloc(MEDIA_REPLY_MAX + 1);
+        body = mimo ? heap_caps_malloc(limit + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : malloc(limit + 1);
+        if (!body && mimo && limit <= MEDIA_REPLY_MAX) body = malloc(limit + 1);
         if (!body) err = ESP_ERR_NO_MEM;
     }
     if (err == ESP_OK) {
         size_t used = 0;
         int count = 0;
         do {
-            count = esp_http_client_read(client, body + used, MEDIA_REPLY_MAX + 1 - used);
+            count = esp_http_client_read(client, body + used, limit + 1 - used);
             if (count > 0) used += count;
-        } while (count > 0 && used <= MEDIA_REPLY_MAX);
-        if (count < 0 || used > MEDIA_REPLY_MAX) {
+        } while (count > 0 && used <= limit);
+        if (count < 0 || used > limit) {
             err = count < 0 ? ESP_FAIL : ESP_ERR_INVALID_SIZE;
         } else {
             body[used] = '\0';
@@ -155,6 +183,87 @@ static esp_err_t exchange(const cJSON *profile, const char *url, const char *pre
         memset(auth, 0, strlen(auth));
         free(auth);
     }
+    return err;
+}
+
+static char *mimo_request(const cJSON *profile, const char *input, const char *format)
+{
+    const cJSON *parameters = cJSON_GetObjectItemCaseSensitive(profile, "parameters");
+    cJSON *body = parameters ? cJSON_Duplicate(parameters, true) : cJSON_CreateObject();
+    cJSON *audio = cJSON_GetObjectItemCaseSensitive(body, "audio");
+    cJSON *messages = cJSON_GetObjectItemCaseSensitive(body, "messages");
+    if (!audio) audio = cJSON_AddObjectToObject(body, "audio");
+    if (!messages) messages = cJSON_AddArrayToObject(body, "messages");
+    cJSON *line = cJSON_IsArray(messages) ? cJSON_CreateObject() : NULL;
+    if (line && !cJSON_AddItemToArray(messages, line)) {
+        cJSON_Delete(line);
+        line = NULL;
+    }
+    cJSON_DeleteItemFromObjectCaseSensitive(audio, "format");
+    cJSON_DeleteItemFromObjectCaseSensitive(body, "model");
+    cJSON_DeleteItemFromObjectCaseSensitive(body, "stream");
+    char *json = cJSON_IsObject(audio) && cJSON_AddStringToObject(audio, "format", format) &&
+                 cJSON_AddStringToObject(body, "model", cloud_media_string(profile, "model")) &&
+                 cJSON_AddFalseToObject(body, "stream") && cJSON_AddStringToObject(line, "role", "assistant") &&
+                 cJSON_AddStringToObject(line, "content", input) ? cJSON_PrintUnformatted(body) : NULL;
+    cJSON_Delete(body);
+    return json;
+}
+
+static bool valid_audio_start(const unsigned char *bytes, size_t count, const char *format)
+{
+    if (!strcmp(format, "wav")) {
+        return count >= 12 && !memcmp(bytes, "RIFF", 4) && !memcmp(bytes + 8, "WAVE", 4);
+    }
+    return count >= 4 && (!memcmp(bytes, "ID3", 3) || (bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0));
+}
+
+static esp_err_t save_audio(const cJSON *response, const char *path, const char *format, char **result)
+{
+    const char *encoded = cJSON_GetStringValue(json_path(response, path));
+    if (!encoded || !*encoded) return ESP_ERR_NOT_FOUND;
+    size_t length = strlen(encoded);
+    if (length > TTS_BASE64_MAX) return ESP_ERR_INVALID_SIZE;
+    const char *padding = strchr(encoded, '=');
+    if (length % 4 || (padding && (encoded + length - padding > 2 || padding[strspn(padding, "=")]))) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    char dir[128];
+    esp_err_t err = claw_paths_join(CLAW_PATH_DATA, CLOUD_MEDIA_TTS_DIR, dir, sizeof(dir));
+    if (err != ESP_OK) return err;
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) return ESP_ERR_NO_MEM;
+    char *file_path = NULL;
+    unsigned char *bytes = malloc(3 * TTS_DECODE_BLOCK / 4);
+    if (!bytes || asprintf(&file_path, "%s/pending.%s", dir, format) < 0) {
+        free(bytes);
+        return ESP_ERR_NO_MEM;
+    }
+    FILE *file = fopen(file_path, "wb");
+    err = file ? ESP_OK : ESP_ERR_NO_MEM;
+    size_t total = 0;
+    for (size_t offset = 0; err == ESP_OK && offset < length; offset += TTS_DECODE_BLOCK) {
+        size_t block = length - offset < TTS_DECODE_BLOCK ? length - offset : TTS_DECODE_BLOCK;
+        size_t count = 0;
+        if (mbedtls_base64_decode(bytes, 3 * TTS_DECODE_BLOCK / 4, &count,
+                                  (const unsigned char *)encoded + offset, block) != 0 || !count ||
+                (!offset && !valid_audio_start(bytes, count, format))) {
+            err = ESP_ERR_INVALID_RESPONSE;
+        } else if (total + count > CLOUD_MEDIA_TTS_MAX) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else if (fwrite(bytes, 1, count, file) != count) {
+            err = ESP_ERR_NO_MEM;
+        }
+        total += count;
+    }
+    if (file && fclose(file) != 0) err = ESP_ERR_NO_MEM;
+    if (err == ESP_OK) {
+        *result = file_path;
+    } else {
+        unlink(file_path);
+        free(file_path);
+    }
+    free(bytes);
     return err;
 }
 
@@ -271,18 +380,39 @@ esp_err_t cloud_media_request(const cJSON *profile, const char *input, const cha
 {
     *result = NULL;
     const char *kind = cloud_media_string(profile, "kind");
+    const char *url = cloud_media_string(profile, "url");
     bool text = strcmp(kind, "stt") == 0;
+    const char *authority = strstr(url, "://");
+    const char *url_path = authority ? strchr(authority + 3, '/') : NULL;
+    size_t base_length = strlen(url);
+    if (base_length && url[base_length - 1] == '/') base_length--;
+    bool mimo_base = is_mimo_model(profile) && url_path && !strchr(url, '?') &&
+                     base_length >= (size_t)(url_path - url) + 3 &&
+                     !memcmp(url + base_length - 3, "/v1", 3);
+    bool mimo = mimo_base || is_mimo_tts(profile, url);
+    const cJSON *parameters = cJSON_GetObjectItemCaseSensitive(profile, "parameters");
+    const char *format = setting(cJSON_GetObjectItemCaseSensitive(parameters, "audio"), "format", "mp3");
+    if (mimo && strcmp(format, "mp3") && strcmp(format, "wav")) return ESP_ERR_NOT_SUPPORTED;
     struct stat st = {0};
     if (text && (!file || stat(file, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > CLOUD_MEDIA_AUDIO_MAX)) {
         return ESP_ERR_INVALID_SIZE;
     }
-    char *body = text ? form_request(profile, file, mime) : json_request(profile, kind, input);
+    char *body = text ? form_request(profile, file, mime) :
+                 mimo ? mimo_request(profile, input, format) : json_request(profile, kind, input);
     if (!body) return ESP_ERR_NO_MEM;
     cJSON *response = NULL;
-    esp_err_t err = exchange(profile, cloud_media_string(profile, "url"), body, file, st.st_size,
-                             MEDIA_HTTP_TIMEOUT_MS, &response);
+    char *endpoint = NULL;
+    esp_err_t err = mimo_base && asprintf(&endpoint, "%.*s/chat/completions", (int)base_length, url) < 0 ?
+                    ESP_ERR_NO_MEM : exchange(profile, endpoint ? endpoint : url, body, file, st.st_size,
+                                              MEDIA_HTTP_TIMEOUT_MS, &response);
+    free(endpoint);
     cJSON_free(body);
     if (err != ESP_OK) return err;
+    if (mimo) {
+        err = save_audio(response, setting(profile, "result_path", "choices.0.message.audio.data"), format, result);
+        cJSON_Delete(response);
+        return err;
+    }
     const char *path = setting(profile, "result_path", text ? "text" : strcmp(kind, "image") == 0 ? "data.0.url" : "url");
     err = extract_result(response, path, text, result);
     const char *pattern = cloud_media_string(profile, "poll_url");

@@ -129,7 +129,13 @@ static esp_err_t file_download_handler(httpd_req_t *req)
         return ESP_ERR_NO_MEM;
     }
 
-    httpd_resp_set_type(req, "application/octet-stream");
+    const char *type = "application/octet-stream";
+    if (strncmp(relative_path, "/tts/voice-", sizeof("/tts/voice-") - 1) == 0) {
+        const char *extension = strrchr(relative_path, '.');
+        if (extension && strcmp(extension, ".mp3") == 0) type = "audio/mpeg";
+        else if (extension && strcmp(extension, ".wav") == 0) type = "audio/wav";
+    }
+    httpd_resp_set_type(req, type);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
     while (!feof(file)) {
         size_t read_bytes = fread(scratch, 1, HTTP_SERVER_SCRATCH_SIZE, file);

@@ -84,6 +84,7 @@ static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(show_tool_progress, "show_tool_prog", "false"),
     APP_CONFIG_FIELD(auto_stickers, "auto_stickers", "true"),
     APP_CONFIG_FIELD(sticker_rate, "sticker_rate", APP_DEFAULT_STICKER_RATE),
+    APP_CONFIG_FIELD(tts_reply_mode, "tts_reply_mode", "0"),
     APP_CONFIG_FIELD(llm_api_key, "llm_api_key", APP_DEFAULT_LLM_API_KEY),
     APP_CONFIG_FIELD(llm_backend_type, "llm_backend", APP_DEFAULT_LLM_BACKEND_TYPE),
     APP_CONFIG_FIELD(llm_model, "llm_model", APP_DEFAULT_LLM_MODEL),

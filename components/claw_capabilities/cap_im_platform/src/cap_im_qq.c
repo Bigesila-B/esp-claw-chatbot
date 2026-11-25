@@ -988,7 +988,7 @@ static void cap_im_qq_handle_dispatch(cJSON *data, const char *event_type)
 
     if (content && content[0]) {
         if (cap_im_qq_publish_inbound_text(chat_id, sender_id, message_id, content) == ESP_OK) {
-            ESP_LOGI(TAG, "QQ inbound %s: %.48s%s", chat_id, content, strlen(content) > 48 ? "..." : "");
+            ESP_LOGI(TAG, "QQ inbound %s (%u bytes)", chat_id, (unsigned)strlen(content));
         } else {
             ESP_LOGW(TAG, "Failed to publish QQ inbound message");
         }
